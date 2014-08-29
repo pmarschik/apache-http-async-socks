@@ -1,0 +1,16 @@
+apply plugin: 'java'
+apply plugin: 'application'
+
+sourceCompatibility = 1.8
+version = '1.0'
+
+repositories {
+    mavenCentral()
+}
+
+dependencies {
+    //testCompile group: 'junit', name: 'junit', version: '4.11'
+    compile group: 'org.apache.httpcomponents', name: 'httpasyncclient', version: '4.0.2'
+    compile group: 'com.google.guava', name: 'guava', version: '18.0'
+    compile group: 'ch.qos.logback', name: 'logback-classic', version: '1.1.2'
+}
