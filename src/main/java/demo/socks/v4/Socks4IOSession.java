@@ -101,7 +101,11 @@ public class Socks4IOSession implements IOSession {
             log.trace("demo.socks dst: {}:{}", dstAddr, dstPort);
     }
 
-    @Override
+	public boolean isInitialized() {
+		return initialized;
+	}
+
+	@Override
     public ByteChannel channel() {
         return delegate.channel();
     }

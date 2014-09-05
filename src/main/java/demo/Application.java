@@ -53,12 +53,13 @@ public class Application {
 
         SocksConnectingIOReactor ioReactor = new SocksConnectingIOReactor(IOReactorConfig.custom().build());
 
-        SchemeIOSessionStrategy socksSchemeIOSessionStrategy = new SocksScheme4IOSessionStrategy();
+		SSLIOSessionStrategy sslioSessionStrategy = SSLIOSessionStrategy.getDefaultStrategy();
+        SchemeIOSessionStrategy socksSchemeIOSessionStrategy = new SocksScheme4IOSessionStrategy(sslioSessionStrategy);
 
         Registry<SchemeIOSessionStrategy> sessionStrategyRegistry = RegistryBuilder.<SchemeIOSessionStrategy>create()
                 .register("socks", socksSchemeIOSessionStrategy)
                 .register("http", NoopIOSessionStrategy.INSTANCE)
-                .register("https", SSLIOSessionStrategy.getDefaultStrategy())
+                .register("https", sslioSessionStrategy)
                 .build();
 
         NHttpClientConnectionManager connectionManager = new PoolingNHttpClientConnectionManager(ioReactor, sessionStrategyRegistry);

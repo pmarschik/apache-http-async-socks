@@ -2,13 +2,13 @@ package demo.socks;
 
 import com.google.common.base.Throwables;
 import com.google.common.base.VerifyException;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
+import demo.socks.v4.Socks4IOSession;
 import org.apache.http.impl.nio.DefaultNHttpClientConnection;
 import org.apache.http.nio.NHttpClientEventHandler;
 import org.apache.http.nio.reactor.IOEventDispatch;
 import org.apache.http.nio.reactor.IOSession;
-import demo.socks.v4.Socks4IOSession;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.lang.reflect.Field;
@@ -30,9 +30,9 @@ public class SocksIOEventDispatchProxy implements IOEventDispatch {
     @Override
     public void inputReady(IOSession session) {
         Socks4IOSession socks4IOSession = (Socks4IOSession) session.getAttribute(Socks4IOSession.SESSION_KEY);
-        if (socks4IOSession != null) {
-            if (log.isTraceEnabled())
-                log.trace("receiving demo.socks response");
+		if (socks4IOSession != null && !socks4IOSession.isInitialized()) {
+			if (log.isTraceEnabled())
+				log.trace("receiving demo.socks response");
 
             try {
                 socks4IOSession.receiveSocksConnect();
@@ -57,14 +57,24 @@ public class SocksIOEventDispatchProxy implements IOEventDispatch {
 
                 throw Throwables.propagate(e);
             }
-        }
-        delegate.inputReady(session);
+
+			return;
+		}
+
+		delegate.inputReady(session);
     }
 
     @Override
     public void outputReady(IOSession session) {
-        delegate.outputReady(session);
-    }
+		Socks4IOSession socks4IOSession = (Socks4IOSession) session.getAttribute(Socks4IOSession.SESSION_KEY);
+		if (socks4IOSession != null && !socks4IOSession.isInitialized()) {
+			if (log.isTraceEnabled())
+				log.trace("outputReady but not yet initialized.");
+			return;
+		}
+
+		delegate.outputReady(session);
+	}
 
     @Override
     public void timeout(IOSession session) {
