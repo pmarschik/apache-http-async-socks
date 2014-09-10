@@ -1,6 +1,5 @@
 package demo.socks;
 
-import com.google.common.base.Throwables;
 import com.google.common.base.VerifyException;
 import demo.socks.v4.Socks4IOSession;
 import org.apache.http.impl.nio.DefaultNHttpClientConnection;
@@ -24,65 +23,94 @@ public class SocksIOEventDispatchProxy implements IOEventDispatch {
 
     @Override
     public void connected(IOSession session) {
-        delegate.connected(session);
-    }
-
-    @Override
-    public void inputReady(IOSession session) {
-        Socks4IOSession socks4IOSession = (Socks4IOSession) session.getAttribute(Socks4IOSession.SESSION_KEY);
-		if (socks4IOSession != null && !socks4IOSession.isInitialized()) {
-			if (log.isTraceEnabled())
-				log.trace("receiving demo.socks response");
-
-            try {
-                socks4IOSession.receiveSocksConnect();
-            } catch (IOException | VerifyException e) {
-                if (log.isErrorEnabled())
-                    log.error("error receiving demo.socks response", e);
-
-                try {
-                    DefaultNHttpClientConnection conn = (DefaultNHttpClientConnection) session.getAttribute(IOEventDispatch.CONNECTION_KEY);
-                    Field handlerField = delegate.getClass().getDeclaredField("handler");
-                    handlerField.setAccessible(true);
-                    NHttpClientEventHandler handler = (NHttpClientEventHandler) handlerField.get(delegate);
-                    handler.exception(conn, e);
-                } catch (NoSuchFieldException | IllegalAccessException e1) {
-                    if (log.isErrorEnabled())
-                        log.error("failed to gracefully handle demo.socks response exception, provoking session closed exception.");
-
-                    // provoke connection closed exception
-                    session.close();
-                    delegate.inputReady(session);
-                }
-
-                throw Throwables.propagate(e);
-            }
-
-			return;
-		}
-
-		delegate.inputReady(session);
-    }
-
-    @Override
-    public void outputReady(IOSession session) {
-		Socks4IOSession socks4IOSession = (Socks4IOSession) session.getAttribute(Socks4IOSession.SESSION_KEY);
-		if (socks4IOSession != null && !socks4IOSession.isInitialized()) {
-			if (log.isTraceEnabled())
-				log.trace("outputReady but not yet initialized.");
-			return;
-		}
-
-		delegate.outputReady(session);
+		delegate.connected(session);
 	}
 
     @Override
-    public void timeout(IOSession session) {
-        delegate.timeout(session);
-    }
+    public void inputReady(IOSession session) {
+		try {
+			if (trySocksInitialize(session))
+				delegate.inputReady(session);
+		} catch (RuntimeException e) {
+			session.shutdown();
+			throw e;
+		}
+	}
 
-    @Override
-    public void disconnected(IOSession session) {
-        delegate.disconnected(session);
-    }
+	@Override
+	public void outputReady(IOSession session) {
+		try {
+			if (trySocksInitialize(session))
+				delegate.outputReady(session);
+		} catch (RuntimeException e) {
+			session.shutdown();
+			throw e;
+		}
+	}
+
+	@Override
+	public void timeout(IOSession session) {
+		try {
+			delegate.timeout(session);
+
+			final Socks4IOSession socks4IOSession = (Socks4IOSession) session.getAttribute(Socks4IOSession.SESSION_KEY);
+			if (socks4IOSession != null)
+				socks4IOSession.shutdown();
+		} catch (RuntimeException e) {
+			session.shutdown();
+			throw e;
+		}
+	}
+
+	@Override
+	public void disconnected(IOSession session) {
+		delegate.disconnected(session);
+	}
+
+	private boolean trySocksInitialize(IOSession session) {
+		Socks4IOSession socks4IOSession = (Socks4IOSession) session.getAttribute(Socks4IOSession.SESSION_KEY);
+		if (socks4IOSession != null) {
+			try {
+				if (!socks4IOSession.isInitialized())
+					return socks4IOSession.initialize();
+			} catch (IOException | VerifyException e) {
+				if (log.isErrorEnabled())
+					log.error("error receiving socks response", e);
+				onException(socks4IOSession, e);
+				socks4IOSession.shutdown();
+			}
+		}
+		return true;
+	}
+
+	private void onException(IOSession session, Exception e) {
+		NHttpClientEventHandler handler = unwrapClientEventHandler(session);
+
+		if (handler != null) {
+			DefaultNHttpClientConnection conn = unwrapClientConnection(session);
+			handler.exception(conn, e);
+			session.shutdown();
+		} else {
+			if (log.isWarnEnabled())
+				log.warn("provoking session closed exception since NHttpClientEventHandler couldn't be unwrapped");
+			session.close();
+			delegate.inputReady(session);
+		}
+	}
+
+	private DefaultNHttpClientConnection unwrapClientConnection(IOSession session) {
+		return (DefaultNHttpClientConnection) session.getAttribute(IOEventDispatch.CONNECTION_KEY);
+	}
+
+	private NHttpClientEventHandler unwrapClientEventHandler(IOSession session) {
+		try {
+			Field handlerField = delegate.getClass().getDeclaredField("handler");
+			handlerField.setAccessible(true);
+			return (NHttpClientEventHandler) handlerField.get(delegate);
+		} catch (NoSuchFieldException | IllegalAccessException e) {
+			if (log.isErrorEnabled())
+				log.error("failed to unwrap NHttpClientEventHandler from session {}", session, e);
+			return null;
+		}
+	}
 }

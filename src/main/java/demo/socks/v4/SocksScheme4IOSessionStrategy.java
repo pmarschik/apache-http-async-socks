@@ -33,12 +33,14 @@ public class SocksScheme4IOSessionStrategy implements SchemeIOSessionStrategy {
 		String targetScheme = route.getTargetHost().getSchemeName();
 
 		Socks4IOSession socksSession = new Socks4IOSession(iosession, "user");
-        socksSession.sendSocksConnect();
+		socksSession.initialize();
 
 		IOSession resultSession = socksSession;
 
-		if(Objects.equals("https", targetScheme))
+		if (Objects.equals("https", targetScheme)) {
 			resultSession = sslioSessionStrategy.upgrade(route.getTargetHost(), socksSession);
+			resultSession.setAttribute(Socks4IOSession.SESSION_KEY, socksSession);
+		}
 
         return resultSession;
     }

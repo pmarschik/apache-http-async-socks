@@ -1,5 +1,6 @@
 package demo;
 
+import com.google.common.net.UrlEscapers;
 import demo.socks.SocksConnectingIOReactor;
 import demo.socks.v4.SocksScheme4IOSessionStrategy;
 import org.apache.http.HttpException;
@@ -26,30 +27,28 @@ import org.apache.http.nio.protocol.BasicAsyncRequestProducer;
 import org.apache.http.nio.protocol.HttpAsyncRequestProducer;
 import org.apache.http.nio.protocol.HttpAsyncResponseConsumer;
 import org.apache.http.protocol.HttpContext;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.io.IOException;
 import java.net.URI;
 import java.nio.CharBuffer;
-import java.util.Collections;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.Future;
 
 public class Application {
+	private static final Logger log = LoggerFactory.getLogger(Application.class);
+	private static final int HTTP_REQUEST_COUNT = 20;
 
-    public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
-        HttpHost proxy = null;
-
-        if (args.length >= 3) {
-            String scheme = args[0];
-            String host = args[1];
-            int port = Integer.parseInt(args[2]);
-
-            proxy = new HttpHost(host, port, scheme);
-        }
-
-//        proxy = new HttpHost(InetAddress.getLoopbackAddress(), 8888, "socks"); // valid local socks4 proxy
-//        proxy = new HttpHost(InetAddress.getLoopbackAddress(), 9999, "socks"); // invalid local socks4 proxy
-//        proxy = new HttpHost("93.82.197.107", 3129, "http"); // http proxy
+	public static void main(String[] args) throws IOException, ExecutionException, InterruptedException {
+		HttpHost[] proxies = new HttpHost[]{
+				new HttpHost("127.0.0.1", 8888, "socks"), // local socks4 proxy
+				new HttpHost("127.0.0.1", 8889, "socks"), // local socks4 proxy
+				new HttpHost("67.43.35.64", 8118, "http"), // free http proxy
+				new HttpHost("127.0.0.1", 9999, "socks") // invalid local socks4 proxy
+		};
 
         SocksConnectingIOReactor ioReactor = new SocksConnectingIOReactor(IOReactorConfig.custom().build());
 
@@ -70,60 +69,117 @@ public class Application {
         client.start();
 
         URI requestUri = URI.create("http://httpbin.org/get");
-        HttpRequest request = new HttpGet(requestUri);
-
-        HttpAsyncRequestProducer requestProducer = new BasicAsyncRequestProducer(
-                new HttpHost(requestUri.getHost(), requestUri.getPort(), requestUri.getScheme()),
-                request);
-
-        HttpAsyncResponseConsumer<Void> responseConsumer = new AsyncCharConsumer<Void>() {
-            @Override
-            protected void onCharReceived(CharBuffer buf, IOControl ioctrl) throws IOException {
-                System.out.print(buf.array());
-            }
-
-            @Override
-            protected void onResponseReceived(HttpResponse response) throws HttpException, IOException {
-                System.out.printf("response received: status %d\n", response.getStatusLine().getStatusCode());
-            }
-
-            @Override
-            protected Void buildResult(HttpContext context) throws Exception {
-                System.out.println("build result");
-                return null;
-            }
-        };
-
-        HttpClientContext httpContext = new HttpClientContext();
-        httpContext.setRequestConfig(RequestConfig.custom()
-                .setProxy(proxy)
-                .setAuthenticationEnabled(true)
-                .setProxyPreferredAuthSchemes(Collections.singleton("none"))
-                .build());
-
-        FutureCallback<Void> callback = new FutureCallback<Void>() {
-            @Override
-            public void completed(Void result) {
-                System.out.println("completed");
-            }
-
-            @Override
-            public void failed(Exception ex) {
-                System.err.println("failed");
-                ex.printStackTrace();
-            }
-
-            @Override
-            public void cancelled() {
-                System.out.println("cancelled");
-            }
-        };
 
         try {
-            Future<Void> future = client.execute(requestProducer, responseConsumer, httpContext, callback);
-            future.get();
-        } finally {
-            client.close();
-        }
-    }
+			List<Future<String>> successFutures = new ArrayList<>();
+			List<Future<String>> failFutures = new ArrayList<>();
+			//Random random = new Random(System.currentTimeMillis());
+
+			for (int i = 0; i < HTTP_REQUEST_COUNT; i++) {
+				HttpHost proxy = proxies[i % proxies.length];
+
+				HttpRequest request = new HttpGet(requestUri + "?proxy=" + UrlEscapers.urlFragmentEscaper().escape(proxy.toString()) + "&requestNo=" + (i + 1));
+
+				HttpAsyncRequestProducer requestProducer = new BasicAsyncRequestProducer(
+						new HttpHost(requestUri.getHost(), requestUri.getPort(), requestUri.getScheme()),
+						request);
+
+				HttpClientContext httpContext = new HttpClientContext();
+				httpContext.setRequestConfig(RequestConfig.custom()
+						.setProxy(proxy)
+						.setSocketTimeout(10000)
+						.setConnectTimeout(1000)
+						.setConnectionRequestTimeout(1000)
+						.build());
+
+				FutureCallback<String> callback = new LoggingFutureCallback();
+				HttpAsyncResponseConsumer<String> responseConsumer = new LoggingAsyncCharConsumer();
+
+				Future<String> future = client.execute(requestProducer, responseConsumer, httpContext, callback);
+
+				if (proxy.getPort() >= 9000)
+					failFutures.add(future);
+				else
+					successFutures.add(future);
+			}
+
+			List<String> results = new ArrayList<>();
+
+			for (Future<String> future : successFutures)
+				try {
+					String response = future.get();
+					results.add("Successful response: " + response.replace('\n', ' '));
+				} catch (Exception e) {
+					log.error("http request failed", e);
+					results.add("Failed response: " + e.getMessage());
+				}
+
+			for (Future<String> future : failFutures) {
+				try {
+					String response = future.get();
+					log.error("shouldn't be able to get fail future");
+					results.add("Failed error: " + response);
+				} catch (Exception e) {
+					results.add("Successful error: " + e.getMessage());
+				}
+			}
+
+			for (String result : results) {
+				if (result.startsWith("Failed"))
+					System.err.println(result);
+				else
+					System.out.println(result);
+			}
+		} finally {
+			client.close();
+		}
+	}
+
+	private static class LoggingFutureCallback implements FutureCallback<String> {
+		private static final Logger log = LoggerFactory.getLogger(LoggingFutureCallback.class);
+
+		@Override
+		public void completed(String result) {
+			if (log.isInfoEnabled())
+				log.info("future completed, result: {}...", result.replace('\n', ' ').substring(0, Math.min(8, result.length())));
+		}
+
+		@Override
+		public void failed(Exception ex) {
+			if (log.isErrorEnabled())
+				log.error("future error", ex);
+		}
+
+		@Override
+		public void cancelled() {
+			if (log.isInfoEnabled())
+				log.info("cancelled");
+		}
+	}
+
+	private static class LoggingAsyncCharConsumer extends AsyncCharConsumer<String> {
+		private static final Logger log = LoggerFactory.getLogger(LoggingAsyncCharConsumer.class);
+		private StringBuilder builder = new StringBuilder(1024);
+
+		@Override
+		protected void onCharReceived(CharBuffer buf, IOControl ioctrl) throws IOException {
+			if (log.isTraceEnabled())
+				log.trace("char received");
+			builder.append(buf);
+		}
+
+		@Override
+		protected void onResponseReceived(HttpResponse response) throws HttpException, IOException {
+			if (log.isInfoEnabled())
+				log.info("response received: status {}", response.getStatusLine().getStatusCode());
+			builder.delete(0, builder.length());
+		}
+
+		@Override
+		protected String buildResult(HttpContext context) throws Exception {
+			if (log.isInfoEnabled())
+				log.info("build result");
+			return builder.toString();
+		}
+	}
 }
